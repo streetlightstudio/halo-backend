@@ -45,13 +45,13 @@ app.use(
  })
 );
 
-// MongoDB Connection
+// MongoDB Connection (Updated: Removed deprecated options)
 mongoose
- .connect(MONGO, { useNewUrlParser: true, useUnifiedTopology: true })
+ .connect(MONGO)
  .then(() => console.log("Connected to MongoDB"))
  .catch((err) => console.error("MongoDB connection error:", err));
 
-// User Schema (Updated to match your database)
+// User Schema
 const userSchema = new mongoose.Schema({
  email: { type: String, required: true, unique: true },
  password: { type: String, required: true },
@@ -67,7 +67,7 @@ const userSchema = new mongoose.Schema({
  isDelete: { type: Boolean, default: false },
  orderId: { type: String, default: null },
  attempt: { type: Number, default: 0 },
- badge: { enum: [Array] }, // Adjust as needed
+ badge: { enum: [Array] },
  subscription: {
   plan: { type: String, default: "free" },
   startDate: { type: Date },
@@ -82,12 +82,23 @@ const User = mongoose.model("User", userSchema);
 
 // Thread Schema
 const threadSchema = new mongoose.Schema({
- userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Optional
+ userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
  threadId: { type: String, required: true },
  createdAt: { type: Date, default: Date.now },
 });
 
 const Thread = mongoose.model("Thread", threadSchema);
+
+// Message Schema
+const messageSchema = new mongoose.Schema({
+ userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+ threadId: { type: String, required: true },
+ role: { type: String, enum: ["user", "assistant"], required: true },
+ content: { type: String, required: true },
+ createdAt: { type: Date, default: Date.now },
+});
+
+const Message = mongoose.model("Message", messageSchema);
 
 // Middleware to verify JWT
 const authenticateToken = (req, res, next) => {
@@ -148,12 +159,25 @@ async function createThread(userId = null) {
  return thread;
 }
 
-async function addMessage(threadId, message) {
+async function addMessage(threadId, message, userId) {
  console.log("Adding message to thread: " + threadId);
- return await openai.beta.threads.messages.create(threadId, {
+ const openaiMessage = await openai.beta.threads.messages.create(threadId, {
   role: "user",
   content: message,
  });
+
+ if (userId) {
+  const newMessage = new Message({
+   userId,
+   threadId,
+   role: "user",
+   content: message,
+   createdAt: new Date(openaiMessage.created_at * 1000),
+  });
+  await newMessage.save();
+ }
+
+ return openaiMessage;
 }
 
 async function runAssistant(threadId) {
@@ -167,13 +191,13 @@ async function getRunStatus(threadId, runId) {
  return await openai.beta.threads.runs.retrieve(threadId, runId);
 }
 
-async function getLatestAssistantMessage(threadId) {
+async function getLatestAssistantMessage(threadId, userId) {
  const messagesList = await openai.beta.threads.messages.list(threadId);
  const latestAssistantMessage = messagesList.data.find(
   (msg) => msg.role === "assistant"
  );
 
- return latestAssistantMessage
+ const messageContent = latestAssistantMessage
   ? {
      role: "assistant",
      content: latestAssistantMessage.content
@@ -183,6 +207,19 @@ async function getLatestAssistantMessage(threadId) {
       .trim(),
     }
   : { role: "assistant", content: "I'm here to help. How can I assist you?" };
+
+ if (userId && latestAssistantMessage) {
+  const newMessage = new Message({
+   userId,
+   threadId,
+   role: "assistant",
+   content: messageContent.content,
+   createdAt: new Date(latestAssistantMessage.created_at * 1000),
+  });
+  await newMessage.save();
+ }
+
+ return messageContent;
 }
 
 // Subscription Status Check Function
@@ -390,19 +427,12 @@ app.get("/thread/messages/:threadId", authenticateToken, async (req, res) => {
    );
    return res.status(400).json({ error: "Invalid threadId" });
   }
-  const messagesList = await openai.beta.threads.messages.list(threadId);
-  const messages = messagesList.data
-   .map((msg) => ({
-    id: msg.id,
-    role: msg.role,
-    content: msg.content
-     .filter((content) => content.type === "text")
-     .map((content) => content.text.value)
-     .join("\n")
-     .trim(),
-    createdAt: msg.created_at,
-   }))
-   .sort((a, b) => a.createdAt - b.createdAt); // Oldest first
+
+  const messages = await Message.find({ threadId })
+   .sort({ createdAt: 1 })
+   .lean()
+   .exec();
+
   res.json({ messages });
  } catch (error) {
   console.error("Error in /thread/messages/:threadId endpoint:", error);
@@ -421,7 +451,8 @@ app.post("/message", authenticateToken, async (req, res) => {
    return res.status(400).json({ error: "Invalid or missing threadId" });
   }
 
-  await addMessage(threadId, message);
+  const userId = req.user ? req.user.id : null;
+  await addMessage(threadId, message, userId);
   const run = await runAssistant(threadId);
   const runId = run.id;
 
@@ -435,7 +466,7 @@ app.post("/message", authenticateToken, async (req, res) => {
 
    if (runStatus.status === "completed") {
     clearInterval(pollStatus);
-    const latestMessage = await getLatestAssistantMessage(threadId);
+    const latestMessage = await getLatestAssistantMessage(threadId, userId);
     io.to(threadId).emit("newMessage", latestMessage);
     res.json({ messages: [latestMessage] });
    } else if (runStatus.status === "failed" || attempts >= maxAttempts) {
@@ -479,7 +510,7 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   }
 
   await fs.unlink(file.path);
-  await addMessage(threadId, message);
+  await addMessage(threadId, message, req.user.id);
   const run = await runAssistant(threadId);
   const runId = run.id;
 
@@ -493,7 +524,10 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
 
    if (runStatus.status === "completed") {
     clearInterval(pollStatus);
-    const latestMessage = await getLatestAssistantMessage(threadId);
+    const latestMessage = await getLatestAssistantMessage(
+     threadId,
+     req.user.id
+    );
     io.to(threadId).emit("newMessage", latestMessage);
     res.json({ messages: [latestMessage] });
    } else if (runStatus.status === "failed" || attempts >= maxAttempts) {
@@ -514,7 +548,7 @@ app.get("/test-email", async (req, res) => {
  try {
   const mailOptions = {
    from: EMAIL_USER,
-   to: "test@example.com", // Replace with a valid email for testing
+   to: "test@example.com",
    subject: "Test Email",
    text: "This is a test email from Healthematics.",
   };
@@ -550,7 +584,7 @@ app.post("/consultation", requireAuth, async (req, res) => {
    });
   }
 
-  const name = user.name || user.username || "Unknown"; // Fallback to username if name is absent
+  const name = user.name || user.username || "Unknown";
   const email = user.email;
 
   const consultancyMailOptions = {
@@ -592,7 +626,7 @@ app.post("/consultation", requireAuth, async (req, res) => {
   console.log("User email sent.");
 
   const message = `Consultation request submitted successfully!\n\nName: ${name}\nEmail: ${email}\nDescription: ${description}\n\nWe've notified our team, and a copy of this request has been sent to your email. You'll hear from us soon!`;
-  await addMessage(threadId, message);
+  await addMessage(threadId, message, req.user.id);
   const run = await runAssistant(threadId);
   const runId = run.id;
 
@@ -606,7 +640,10 @@ app.post("/consultation", requireAuth, async (req, res) => {
 
    if (runStatus.status === "completed") {
     clearInterval(pollStatus);
-    const latestMessage = await getLatestAssistantMessage(threadId);
+    const latestMessage = await getLatestAssistantMessage(
+     threadId,
+     req.user.id
+    );
     io.to(threadId).emit("newMessage", latestMessage);
     res.json({ messages: [latestMessage] });
    } else if (runStatus.status === "failed" || attempts >= maxAttempts) {
