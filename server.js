@@ -45,7 +45,7 @@ app.use(
  })
 );
 
-// MongoDB Connection (Updated: Removed deprecated options)
+// MongoDB Connection
 mongoose
  .connect(MONGO)
  .then(() => console.log("Connected to MongoDB"))
