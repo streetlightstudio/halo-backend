@@ -12,6 +12,7 @@ const multer = require("multer");
 const fs = require("fs").promises;
 const pdfParse = require("pdf-parse");
 const nodemailer = require("nodemailer");
+const cookieParser = require("cookie-parser");
 
 const {
  OPENAI_API_KEY,
@@ -38,6 +39,7 @@ const io = new Server(server, {
 // Middleware
 app.use(cors({ origin: FRONTEND_URL, credentials: true }));
 app.use(express.json());
+app.use(cookieParser());
 app.use(
  rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -100,7 +102,123 @@ const messageSchema = new mongoose.Schema({
 
 const Message = mongoose.model("Message", messageSchema);
 
-// Middleware to verify JWT
+// Policy Data
+const policyData = require("./data/policies.json"); // Adjust path as needed
+
+// PolicyFinder Class
+class PolicyFinder {
+ constructor(policyData) {
+  this.policyData = policyData;
+ }
+
+ findPolicyId(searchTerm) {
+  const searchLower = searchTerm.toLowerCase().trim();
+  console.log(`Searching for policy with term: "${searchLower}"`);
+
+  const matchingPolicy = this.policyData.data.find((policy) => {
+   const name = policy.policyName.name?.toLowerCase() || "";
+   const desc = policy.policyName.desc?.toLowerCase() || "";
+   const subCat = policy.pSubId.name?.toLowerCase() || "";
+
+   const matches =
+    name.includes(searchLower) ||
+    desc.includes(searchLower) ||
+    subCat.includes(searchLower) ||
+    name.split(" ").some((word) => word.startsWith(searchLower)) ||
+    desc.split(" ").some((word) => word.startsWith(searchLower)) ||
+    subCat.split(" ").some((word) => word.startsWith(searchLower));
+
+   if (matches) {
+    console.log(`Found match: ${policy.policyName.name}`);
+   }
+   return matches;
+  });
+
+  if (matchingPolicy) {
+   return `https://healthematics.com/policies/4/6/${matchingPolicy._id}`;
+  } else {
+   console.log(`No policy found for "${searchLower}"`);
+   return null;
+  }
+ }
+
+ getPolicyUrl(searchTerm) {
+  try {
+   const policyUrl = this.findPolicyId(searchTerm);
+   if (policyUrl) {
+    return {
+     status: "success",
+     url: policyUrl,
+     message: "Policy found",
+    };
+   }
+   return {
+    status: "error",
+    message: `No matching policy found for "${searchTerm}". Try a different term.`,
+   };
+  } catch (error) {
+   console.error("Error in getPolicyUrl:", error.message);
+   return {
+    status: "error",
+    message: `Error processing request: ${error.message}`,
+   };
+  }
+ }
+
+ getPolicyDetails(searchTerm) {
+  const searchLower = searchTerm.toLowerCase().trim();
+  console.log(`Fetching details for policy with term: "${searchLower}"`);
+
+  const matchingPolicy = this.policyData.data.find((policy) => {
+   const name = policy.policyName.name?.toLowerCase() || "";
+   const desc = policy.policyName.desc?.toLowerCase() || "";
+   const subCat = policy.pSubId.name?.toLowerCase() || "";
+
+   return (
+    name.includes(searchLower) ||
+    desc.includes(searchLower) ||
+    subCat.includes(searchLower) ||
+    name.split(" ").some((word) => word.startsWith(searchLower)) ||
+    desc.split(" ").some((word) => word.startsWith(searchLower)) ||
+    subCat.split(" ").some((word) => word.startsWith(searchLower))
+   );
+  });
+
+  if (!matchingPolicy) {
+   return {
+    status: "error",
+    message: "No matching policy found.",
+   };
+  }
+
+  return {
+   status: "success",
+   policy: {
+    name: matchingPolicy.policyName.name,
+    description: matchingPolicy.policyName.desc,
+    category: matchingPolicy.pCategoryId.name,
+    subcategory: matchingPolicy.pSubId.name,
+    url: `http://localhost:${PORT}/policies/4/6/${matchingPolicy._id}`,
+    created: new Date(matchingPolicy.policyName.createdAt).toLocaleDateString(),
+   },
+  };
+ }
+
+ getPolicyById(policyId) {
+  const policy = this.policyData.data.find((p) => p._id === policyId);
+  if (policy) {
+   console.log(`Found policy by ID: ${policy.policyName.name}`);
+   return { status: "success", policy };
+  } else {
+   console.log(`No policy found for ID: ${policyId}`);
+   return { status: "error", message: "Policy not found" };
+  }
+ }
+}
+
+const policyFinder = new PolicyFinder(policyData);
+
+// Middleware to verify JWT and validate user existence
 const authenticateToken = (req, res, next) => {
  const authHeader = req.headers["authorization"];
  const token = authHeader && authHeader.split(" ")[1];
@@ -117,18 +235,29 @@ const authenticateToken = (req, res, next) => {
  });
 };
 
-// Middleware to require authentication
-const requireAuth = (req, res, next) => {
+// Middleware to require authentication and ensure user exists
+const requireAuth = async (req, res, next) => {
  const authHeader = req.headers["authorization"];
  const token = authHeader && authHeader.split(" ")[1];
 
- if (!token) return res.status(401).json({ error: "Authentication required" });
+ if (!token) {
+  return res.status(401).json({ error: "Authentication required" });
+ }
 
- jwt.verify(token, JWT_KEY, (err, user) => {
-  if (err) return res.status(403).json({ error: "Invalid token" });
-  req.user = user;
+ try {
+  const decoded = jwt.verify(token, JWT_KEY);
+  const user = await User.findById(decoded.id);
+  if (!user) {
+   return res.status(401).json({
+    error: "User not found in database. Please re-login or register.",
+   });
+  }
+  req.user = { id: user._id.toString(), email: user.email };
   next();
- });
+ } catch (err) {
+  console.error("Token verification error:", err.message);
+  return res.status(403).json({ error: "Invalid or expired token" });
+ }
 };
 
 // OpenAI Setup
@@ -146,6 +275,9 @@ const transporter = nodemailer.createTransport({
   pass: EMAIL_PASS,
  },
 });
+
+// Upload Queue
+const uploadQueue = new Map();
 
 // OpenAI Functions
 async function createThread(userId = null) {
@@ -220,6 +352,33 @@ async function getLatestAssistantMessage(threadId, userId) {
  }
 
  return messageContent;
+}
+
+// Function to use OpenAI to extract policy search term
+async function extractPolicySearchTerm(userInput) {
+ const prompt = `
+    Analyze the following user input and determine if they are asking to find a policy. If so, extract the specific policy topic or keyword they are looking for. Return the result in JSON format with two fields:
+    - "isPolicyRequest": boolean (true if it's a policy request, false otherwise)
+    - "searchTerm": string (the policy topic or keyword, or empty string if not a policy request)
+
+    Input: "${userInput}"
+  `;
+
+ try {
+  const response = await openai.chat.completions.create({
+   model: "gpt-3.5-turbo",
+   messages: [{ role: "user", content: prompt }],
+   max_tokens: 100,
+   temperature: 0.3, // Lower temperature for more precise extraction
+  });
+
+  const result = JSON.parse(response.choices[0].message.content.trim());
+  console.log(`OpenAI policy extraction result: ${JSON.stringify(result)}`);
+  return result;
+ } catch (error) {
+  console.error("Error extracting policy search term:", error.message);
+  return { isPolicyRequest: false, searchTerm: "" };
+ }
 }
 
 // Subscription Status Check Function
@@ -404,12 +563,25 @@ app.get("/thread", authenticateToken, async (req, res) => {
    }
    thread = await createThread(req.user.id);
   } else {
+   const tempThreadId = req.cookies.tempThreadId;
+   if (tempThreadId && (await Thread.findOne({ threadId: tempThreadId }))) {
+    console.log(
+     `Reusing temp thread for unauthenticated user: ${tempThreadId}`
+    );
+    return res.json({ threadId: tempThreadId });
+   }
    thread = await createThread();
+   res.cookie("tempThreadId", thread.id, {
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000,
+   });
   }
   res.json({ threadId: thread.id });
  } catch (error) {
   console.error("Error in /thread endpoint:", error);
-  res.status(500).json({ error: "Failed to create thread" });
+  res
+   .status(500)
+   .json({ error: "Failed to create thread. Please try again later." });
  }
 });
 
@@ -432,11 +604,12 @@ app.get("/thread/messages/:threadId", authenticateToken, async (req, res) => {
    .sort({ createdAt: 1 })
    .lean()
    .exec();
-
   res.json({ messages });
  } catch (error) {
   console.error("Error in /thread/messages/:threadId endpoint:", error);
-  res.status(500).json({ error: "Failed to fetch messages" });
+  res
+   .status(500)
+   .json({ error: "Failed to fetch messages. Please try again." });
  }
 });
 
@@ -448,35 +621,102 @@ app.post("/message", authenticateToken, async (req, res) => {
    req.user ? { userId: req.user.id, threadId } : { threadId }
   );
   if (!threadId || !thread) {
-   return res.status(400).json({ error: "Invalid or missing threadId" });
+   return res
+    .status(400)
+    .json({ error: "No active conversation found. Please start a new chat." });
   }
 
   const userId = req.user ? req.user.id : null;
-  await addMessage(threadId, message, userId);
+
+  // Use OpenAI to analyze the user input
+  const policyAnalysis = await extractPolicySearchTerm(message);
+  let responseMessage;
+
+  if (policyAnalysis.isPolicyRequest && policyAnalysis.searchTerm) {
+   console.log(`Detected policy request for: "${policyAnalysis.searchTerm}"`);
+   const policyResult = policyFinder.getPolicyUrl(policyAnalysis.searchTerm);
+   responseMessage =
+    policyResult.status === "success"
+     ? `Found a policy: ${policyResult.url}`
+     : policyResult.message;
+  } else {
+   responseMessage = message;
+  }
+
+  await addMessage(threadId, responseMessage, userId);
   const run = await runAssistant(threadId);
   const runId = run.id;
 
   const maxAttempts = 20;
   let attempts = 0;
-  const pollInterval = 1000;
+  const pollInterval = 500;
 
   const pollStatus = setInterval(async () => {
    attempts++;
-   const runStatus = await getRunStatus(threadId, runId);
+   try {
+    const runStatus = await getRunStatus(threadId, runId);
 
-   if (runStatus.status === "completed") {
+    if (runStatus.status === "completed") {
+     clearInterval(pollStatus);
+     const latestMessage = await getLatestAssistantMessage(threadId, userId);
+     io.to(threadId).emit("newMessage", latestMessage);
+     console.log("Sending response");
+     res.json({ messages: [latestMessage] });
+    } else if (runStatus.status === "failed") {
+     clearInterval(pollStatus);
+     res.status(500).json({ error: "Assistant processing failed" });
+    } else if (attempts >= maxAttempts) {
+     clearInterval(pollStatus);
+     res.status(408).json({ error: "Assistant processing timed out" });
+    }
+   } catch (pollError) {
     clearInterval(pollStatus);
-    const latestMessage = await getLatestAssistantMessage(threadId, userId);
-    io.to(threadId).emit("newMessage", latestMessage);
-    res.json({ messages: [latestMessage] });
-   } else if (runStatus.status === "failed" || attempts >= maxAttempts) {
-    clearInterval(pollStatus);
-    res.status(500).json({ error: "Assistant processing failed or timed out" });
+    console.error("Error during polling:", pollError.message);
+    res.status(500).json({ error: "Polling error occurred" });
    }
   }, pollInterval);
  } catch (error) {
   console.error("Error in /message endpoint:", error);
-  res.status(500).json({ error: "Internal server error" });
+  res.status(500).json({
+   error: error.message.includes("network")
+    ? "Network issue detected. Please check your connection and try again."
+    : "Something went wrong. Please try again later or contact support.",
+  });
+ }
+});
+
+// Policy Routes
+app.get("/api/policy", authenticateToken, async (req, res) => {
+ const { search } = req.query;
+ if (!search) {
+  return res.status(400).json({
+   status: "error",
+   message: "Search term is required",
+  });
+ }
+ const result = policyFinder.getPolicyUrl(search);
+ res.json(result);
+});
+
+app.get("/api/policy/details", authenticateToken, async (req, res) => {
+ const { search } = req.query;
+ if (!search) {
+  return res.status(400).json({
+   status: "error",
+   message: "Search term is required",
+  });
+ }
+ const result = policyFinder.getPolicyDetails(search);
+ res.json(result);
+});
+
+app.get("/policies/4/6/:id", authenticateToken, async (req, res) => {
+ const policyId = req.params.id;
+ const result = policyFinder.getPolicyById(policyId);
+ if (result.status === "success") {
+  res.json(result);
+ } else {
+  res.status(404).json(result);
  }
 });
 
@@ -493,6 +733,13 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   if (!thread) {
    return res.status(400).json({ error: "Invalid threadId" });
   }
+
+  if (uploadQueue.has(req.user.id)) {
+   return res
+    .status(429)
+    .json({ error: "Please wait, your previous upload is still processing." });
+  }
+  uploadQueue.set(req.user.id, true);
 
   const fileContent = await extractFileContent(file.path, file.originalname);
   const validation = await validateContent(fileContent);
@@ -516,7 +763,7 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
 
   const maxAttempts = 20;
   let attempts = 0;
-  const pollInterval = 1000;
+  const pollInterval = 500;
 
   const pollStatus = setInterval(async () => {
    attempts++;
@@ -530,12 +777,19 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
     );
     io.to(threadId).emit("newMessage", latestMessage);
     res.json({ messages: [latestMessage] });
-   } else if (runStatus.status === "failed" || attempts >= maxAttempts) {
+    uploadQueue.delete(req.user.id);
+   } else if (runStatus.status === "failed") {
     clearInterval(pollStatus);
-    res.status(500).json({ error: "Assistant processing failed or timed out" });
+    res.status(500).json({ error: "Assistant processing failed" });
+    uploadQueue.delete(req.user.id);
+   } else if (attempts >= maxAttempts) {
+    clearInterval(pollStatus);
+    res.status(408).json({ error: "Assistant processing timed out" });
+    uploadQueue.delete(req.user.id);
    }
   }, pollInterval);
  } catch (error) {
+  uploadQueue.delete(req.user.id);
   console.error("Error in /upload endpoint:", error);
   res.status(500).json({
    error: `Failed to process file: ${error.message || "Unknown error"}`,
@@ -576,14 +830,6 @@ app.post("/consultation", requireAuth, async (req, res) => {
   }
 
   const user = await User.findById(req.user.id);
-  console.log("req.user:", req.user);
-  console.log("Found user:", user);
-  if (!user) {
-   return res.status(404).json({
-    error: "User not found in database. Please re-login or register.",
-   });
-  }
-
   const name = user.name || user.username || "Unknown";
   const email = user.email;
 
@@ -632,7 +878,7 @@ app.post("/consultation", requireAuth, async (req, res) => {
 
   const maxAttempts = 20;
   let attempts = 0;
-  const pollInterval = 1000;
+  const pollInterval = 500;
 
   const pollStatus = setInterval(async () => {
    attempts++;
@@ -646,23 +892,26 @@ app.post("/consultation", requireAuth, async (req, res) => {
     );
     io.to(threadId).emit("newMessage", latestMessage);
     res.json({ messages: [latestMessage] });
-   } else if (runStatus.status === "failed" || attempts >= maxAttempts) {
+   } else if (runStatus.status === "failed") {
     clearInterval(pollStatus);
-    res.status(500).json({ error: "Assistant processing failed or timed out" });
+    res.status(500).json({ error: "Assistant processing failed" });
+   } else if (attempts >= maxAttempts) {
+    clearInterval(pollStatus);
+    res.status(408).json({ error: "Assistant processing timed out" });
    }
   }, pollInterval);
  } catch (error) {
   console.error("Error in /consultation endpoint:", error.message);
-  res
-   .status(500)
-   .json({ error: `Failed to process consultation request: ${error.message}` });
+  res.status(500).json({
+   error: `Failed to process consultation request: ${error.message}`,
+  });
  }
 });
 
 // Global Error Handler
 app.use((err, req, res, next) => {
  console.error(err.stack);
- res.status(500).json({ error: "Something went wrong!" });
+ res.status(500).json({ error: "Something went wrong! Please try again." });
 });
 
 // Start Server
