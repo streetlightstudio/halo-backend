@@ -9,15 +9,24 @@ class PolicyFinder {
    const name = p.policyName.name?.toLowerCase() || "";
    const desc = p.policyName.desc?.toLowerCase() || "";
    const subCat = p.pSubId.name?.toLowerCase() || "";
-   return (
-    name.includes(searchLower) ||
+   const matches =
+    name === searchLower ||
     desc.includes(searchLower) ||
     subCat.includes(searchLower) ||
     name.split(" ").some((w) => w.startsWith(searchLower)) ||
     desc.split(" ").some((w) => w.startsWith(searchLower)) ||
-    subCat.split(" ").some((w) => w.startsWith(searchLower))
-   );
+    subCat.split(" ").some((w) => w.startsWith(searchLower));
+   if (matches) {
+    console.log(`Match found for "${searchLower}":`, { name, desc, subCat });
+   }
+   return matches;
   });
+  if (!policy) {
+   console.log(
+    `No match for "${searchLower}" in:`,
+    this.policyData.data.map((p) => p.policyName.name)
+   );
+  }
   return policy ? `https://healthematics.com/policies/4/6/${policy._id}` : null;
  }
 
