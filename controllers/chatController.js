@@ -1,4 +1,3 @@
-// controllers/chatController.js
 const Thread = require("../models/Thread");
 const Message = require("../models/Message");
 const {
@@ -75,15 +74,16 @@ const postMessage = async (req, res) => {
     responseData.policyName = bestMatch.policyName;
     responseData.reason = bestMatch.reason;
    } else {
+    console.error("getPolicyUrl failed:", policyResult.message);
     responseMessage = `I found a matching policy (${bestMatch.policyName}), but couldn’t retrieve its URL: ${policyResult.message}`;
     responseData.content = responseMessage;
    }
   } else {
-   responseMessage = `Sorry, I couldn’t find a policy matching your request: ${bestMatch.reason}`;
+   responseMessage = `I couldn’t find a specific policy matching your request. For a list of available policies, visit [Healthematics Policies](https://healthematics.com/policies). Reason: ${bestMatch.reason}`;
    responseData.content = responseMessage;
   }
 
-  console.log("Backend response:", responseData); // Debug log
+  console.log("Backend response:", responseData);
   await addMessage(threadId, message, userId);
   if (userId) {
    await new Message({ userId, threadId, ...responseData }).save();

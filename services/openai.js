@@ -69,12 +69,13 @@ const getLatestAssistantMessage = async (threadId, userId) => {
 const extractPolicySearchTerm = async (userInput) => {
  const prompt = `
     Analyze the following user input: "${userInput}"
-    Determine if this is a request to find a policy. If yes, extract the policy type as a search term.
+    Determine if this is an explicit request to find a specific policy. A request is explicit if it includes phrases like 'find me the', 'show me the', or directly names a policy (e.g., 'Communication policy'). General inquiries about policies (e.g., 'tell me about policies' or 'does healthematics offer policies') should not be treated as policy search requests.
     Examples:
     - "Find me the Communication policy" → {"isPolicyRequest": true, "searchTerm": "Communication policy"}
     - "I need a policy about educating patients" → {"isPolicyRequest": true, "searchTerm": ""}
-    - "How are you today?" → {"isPolicyRequest": false, "searchTerm": ""}
-    Return a plain JSON object (no markdown, no backticks, no extra text) like: {"isPolicyRequest": boolean, "searchTerm": string}
+    - "Tell me about healthcare policies" → {"isPolicyRequest": false, "searchTerm": ""}
+    - "Does healthematics offer policies" → {"isPolicyRequest": false, "searchTerm": ""}
+    Return a plain JSON object (no markdown, no backticks, no extra text): {"isPolicyRequest": boolean, "searchTerm": string}
   `;
  try {
   const response = await openai.chat.completions.create({
@@ -90,7 +91,6 @@ const extractPolicySearchTerm = async (userInput) => {
  } catch (error) {
   console.error("Policy extraction error:", error.message);
   console.error("Raw response:", error.response?.data || "No response data");
-  // Fallback to default if parsing fails
   return { isPolicyRequest: false, searchTerm: "" };
  }
 };
