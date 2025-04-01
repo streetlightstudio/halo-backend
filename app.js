@@ -25,7 +25,7 @@ const io = new Server(server, {
  transports: ["websocket", "polling"],
 });
 
-console.log("JWT_KEY loaded:", JWT_KEY ? "Yes" : "No"); // Added for debugging
+console.log("JWT_KEY loaded:", JWT_KEY ? "Yes" : "No");
 
 io.use((socket, next) => {
  const token = socket.handshake.auth.token;
