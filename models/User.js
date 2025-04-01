@@ -15,7 +15,7 @@ const userSchema = new mongoose.Schema({
  isDelete: { type: Boolean, default: false },
  orderId: { type: String, default: null },
  attempt: { type: Number, default: 0 },
- badge: { enum: [Array] },
+ badge: [{ type: String }], // Fixed from enum: [Array]
  subscription: {
   plan: { type: String, default: "free" },
   startDate: { type: Date },

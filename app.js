@@ -1,4 +1,3 @@
-// app.js
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
@@ -26,12 +25,13 @@ const io = new Server(server, {
  transports: ["websocket", "polling"],
 });
 
-// Socket.IO middleware to validate JWT token
+console.log("JWT_KEY loaded:", JWT_KEY ? "Yes" : "No"); // Added for debugging
+
 io.use((socket, next) => {
  const token = socket.handshake.auth.token;
  if (!token) {
   console.log("No token provided for Socket.IO connection");
-  return next(); // Allow unauthenticated connections
+  return next();
  }
 
  jwt.verify(token, JWT_KEY, (err, decoded) => {

@@ -1,4 +1,3 @@
-// server.js
 const { server } = require("./app");
 const connectDB = require("./config/database");
 const { PORT, MONGO } = require("./config/env");
@@ -11,7 +10,6 @@ const startServer = async () => {
    console.log(`WebSocket server ready at ws://localhost:${PORT}`);
   });
 
-  // Handle server errors
   server.on("error", (error) => {
    if (error.code === "EADDRINUSE") {
     console.error(

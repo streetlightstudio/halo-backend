@@ -20,19 +20,27 @@ const requestConsultation = async (req, res) => {
  const name = user.name || user.username || "Unknown";
  const email = user.email;
 
- await sendEmail({
-  from: process.env.EMAIL_USER,
-  to: CONSULTANCY_EMAIL,
-  subject: "New Consultation Request",
-  text: `Name: ${name}\nEmail: ${email}\nDescription: ${description}\nPlease follow up.`,
- });
+ try {
+  // Send email to consultancy
+  await sendEmail({
+   to: CONSULTANCY_EMAIL,
+   subject: "New Consultation Request",
+   text: `Name: ${name}\nEmail: ${email}\nDescription: ${description}\nPlease follow up.`,
+   html: `<p><strong>Name:</strong> ${name}</p><p><strong>Email:</strong> ${email}</p><p><strong>Description:</strong> ${description}</p><p>Please follow up.</p>`,
+  });
 
- await sendEmail({
-  from: process.env.EMAIL_USER,
-  to: email,
-  subject: "Your Consultation Request with Healthematics",
-  text: `Dear ${name},\n\nWe've received your request:\nDescription: ${description}\n\nWe'll reach out soon.\n\nBest,\nHealthematics Team`,
- });
+  // Send confirmation email to user
+  await sendEmail({
+   to: email,
+   subject: "Your Consultation Request with Healthematics",
+   text: `Dear ${name},\n\nWe've received your request:\nDescription: ${description}\n\nWe'll reach out soon.\n\nBest,\nHealthematics Team`,
+   html: `<p>Dear ${name},</p><p>We've received your request:</p><p><strong>Description:</strong> ${description}</p><p>We'll reach out soon.</p><p>Best,<br>Healthematics Team</p>`,
+  });
+ } catch (error) {
+  return res
+   .status(500)
+   .json({ error: `Failed to send email: ${error.message}` });
+ }
 
  const message = `Consultation request submitted!\n\nName: ${name}\nEmail: ${email}\nDescription: ${description}\n\nTeam notified, email sent.`;
  await addMessage(threadId, message, req.user.id);
