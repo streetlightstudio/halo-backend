@@ -44,6 +44,23 @@ const getMessages = async (req, res) => {
  res.status(400).json({ error: "Invalid threadId" });
 };
 
+const waitForRunCompletion = async (
+ threadId,
+ runId,
+ maxAttempts = 20,
+ delay = 500
+) => {
+ let attempts = 0;
+ while (attempts < maxAttempts) {
+  const runStatus = await getRunStatus(threadId, runId);
+  if (runStatus.status === "completed") return runStatus;
+  if (runStatus.status === "failed") throw new Error("Assistant run failed");
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  attempts++;
+ }
+ throw new Error("Run timed out");
+};
+
 const postMessage = async (req, res) => {
  const { message, threadId } = req.body;
  console.log("Received request:", { message, threadId, user: req.user?.id });
@@ -59,60 +76,54 @@ const postMessage = async (req, res) => {
   return res.status(400).json({ error: "No active conversation found" });
  }
 
- const policyAnalysis = await extractPolicySearchTerm(message);
- if (policyAnalysis.isPolicyRequest) {
-  const bestMatch = await findBestPolicyMatch(message);
-  let responseMessage;
-  let responseData = { role: "assistant" };
+ try {
+  const policyAnalysis = await extractPolicySearchTerm(message);
+  if (policyAnalysis.isPolicyRequest) {
+   const bestMatch = await findBestPolicyMatch(message);
+   let responseMessage;
+   let responseData = { role: "assistant" };
 
-  if (bestMatch.policyId) {
-   const policyResult = await getPolicyUrl(bestMatch.policyName);
-   if (policyResult.status === "success") {
-    responseMessage = `Here’s the best matching policy: ${bestMatch.policyName} - ${policyResult.url}\nReason: ${bestMatch.reason}`;
-    responseData.content = responseMessage;
-    responseData.url = policyResult.url;
-    responseData.policyName = bestMatch.policyName;
-    responseData.reason = bestMatch.reason;
+   if (bestMatch.policyId) {
+    const policyResult = await getPolicyUrl(bestMatch.policyName);
+    if (policyResult.status === "success") {
+     responseMessage = `Here’s the best matching policy: ${bestMatch.policyName} - ${policyResult.url}\nReason: ${bestMatch.reason}`;
+     responseData.content = responseMessage;
+     responseData.url = policyResult.url;
+     responseData.policyName = bestMatch.policyName;
+     responseData.reason = bestMatch.reason;
+    } else {
+     console.error("getPolicyUrl failed:", policyResult.message);
+     responseMessage = `I found a matching policy (${bestMatch.policyName}), but couldn’t retrieve its URL: ${policyResult.message}`;
+     responseData.content = responseMessage;
+    }
    } else {
-    console.error("getPolicyUrl failed:", policyResult.message);
-    responseMessage = `I found a matching policy (${bestMatch.policyName}), but couldn’t retrieve its URL: ${policyResult.message}`;
+    responseMessage = `I couldn’t find a specific policy matching your request. For a list of available policies, visit [Healthematics Policies](https://healthematics.com/policies). Reason: ${bestMatch.reason}`;
     responseData.content = responseMessage;
    }
-  } else {
-   responseMessage = `I couldn’t find a specific policy matching your request. For a list of available policies, visit [Healthematics Policies](https://healthematics.com/policies). Reason: ${bestMatch.reason}`;
-   responseData.content = responseMessage;
+
+   console.log("Backend response:", responseData);
+   await addMessage(threadId, message, userId);
+   if (userId) {
+    await new Message({ userId, threadId, ...responseData }).save();
+   }
+   req.io.to(threadId).emit("newMessage", responseData);
+   return res.json({ messages: [responseData] });
   }
 
-  console.log("Backend response:", responseData);
   await addMessage(threadId, message, userId);
-  if (userId) {
-   await new Message({ userId, threadId, ...responseData }).save();
-  }
-  req.io.to(threadId).emit("newMessage", responseData);
-  return res.json({ messages: [responseData] });
+  const run = await runAssistant(threadId);
+  const runId = run.id;
+
+  await waitForRunCompletion(threadId, runId);
+  const latestMessage = await getLatestAssistantMessage(threadId, userId);
+  req.io.to(threadId).emit("newMessage", latestMessage);
+  res.json({ messages: [latestMessage] });
+ } catch (error) {
+  console.error("postMessage - Error:", error.message);
+  res
+   .status(500)
+   .json({ error: "Failed to process message", details: error.message });
  }
-
- await addMessage(threadId, message, userId);
- const run = await runAssistant(threadId);
- const runId = run.id;
-
- let attempts = 0;
- const maxAttempts = 20;
- const pollInterval = setInterval(async () => {
-  attempts++;
-  const runStatus = await getRunStatus(threadId, runId);
-  if (runStatus.status === "completed") {
-   clearInterval(pollInterval);
-   const latestMessage = await getLatestAssistantMessage(threadId, userId);
-   req.io.to(threadId).emit("newMessage", latestMessage);
-   res.json({ messages: [latestMessage] });
-  } else if (runStatus.status === "failed" || attempts >= maxAttempts) {
-   clearInterval(pollInterval);
-   res.status(runStatus.status === "failed" ? 500 : 408).json({
-    error: runStatus.status === "failed" ? "Assistant failed" : "Timed out",
-   });
-  }
- }, 500);
 };
 
 module.exports = { getThread, getMessages, postMessage };

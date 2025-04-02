@@ -13,10 +13,16 @@ const requestConsultation = async (req, res) => {
  if (!threadId || !description)
   return res.status(400).json({ error: "Thread ID and description required" });
 
+ console.log("requestConsultation - req.user:", req.user); // Log req.user
  const thread = await Thread.findOne({ userId: req.user.id, threadId });
  if (!thread) return res.status(400).json({ error: "Invalid threadId" });
 
  const user = await User.findById(req.user.id);
+ console.log("requestConsultation - Found user:", user ? user : "Not found"); // Log user lookup
+ if (!user) {
+  return res.status(404).json({ error: "User not found in database" });
+ }
+
  const name = user.name || user.username || "Unknown";
  const email = user.email;
 

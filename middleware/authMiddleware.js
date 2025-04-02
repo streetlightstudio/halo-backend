@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const { JWT_KEY } = require("../config/env");
+const mongoose = require("mongoose");
 
 const authenticateToken = (req, res, next) => {
  const token = req.headers["authorization"]?.split(" ")[1];
@@ -34,7 +35,10 @@ const requireAuth = async (req, res, next) => {
  try {
   const decoded = jwt.verify(token, JWT_KEY);
   console.log("requireAuth - Decoded token:", decoded);
-  let user = await User.findById(decoded.id);
+  // Fix: Use 'new' to instantiate ObjectId
+  const userId = new mongoose.Types.ObjectId(decoded.id);
+  let user = await User.findById(userId);
+  console.log("requireAuth - User by ID:", user ? user : "Not found");
 
   if (!user && decoded.email) {
    console.log("requireAuth - ID not found, trying email:", decoded.email);

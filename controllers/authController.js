@@ -5,7 +5,7 @@ const { JWT_KEY } = require("../config/env");
 
 const register = async (req, res) => {
  const { email, password, name, username, phone, lastname } = req.body;
- console.log("Register - Request body:", req.body); // Log input
+ console.log("Register - Request body:", req.body);
 
  if (!email || !password)
   return res.status(400).json({ error: "Email and password required" });
@@ -30,9 +30,15 @@ const register = async (req, res) => {
    lastname,
   });
 
-  const savedUser = await user.save();
-  console.log("Register - User saved:", savedUser); // Log saved user
-  if (!savedUser) throw new Error("Failed to save user to database");
+  const savedUser = await user.save().catch((err) => {
+   console.error("Register - Save error:", err.message, "Stack:", err.stack);
+   throw new Error("Database save failed: " + err.message);
+  });
+  if (!savedUser) {
+   console.error("Register - No user returned from save");
+   throw new Error("Failed to save user to database");
+  }
+  console.log("Register - User saved successfully:", savedUser);
 
   const token = jwt.sign({ id: savedUser._id.toString(), email }, JWT_KEY, {
    expiresIn: "1h",

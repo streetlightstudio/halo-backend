@@ -2,6 +2,11 @@ const { server } = require("./app");
 const connectDB = require("./config/database");
 const { PORT, MONGO } = require("./config/env");
 
+process.on("unhandledRejection", (reason, promise) => {
+ console.error("Unhandled Rejection at:", promise, "reason:", reason);
+ // Optionally, keep the process alive or gracefully shut down
+});
+
 const startServer = async () => {
  try {
   await connectDB(MONGO);

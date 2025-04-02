@@ -4,7 +4,7 @@ const cookieParser = require("cookie-parser");
 const { Server } = require("socket.io");
 const http = require("http");
 const jwt = require("jsonwebtoken");
-const rateLimit = require("./middleware/rateLimit");
+const chatRateLimiter = require("./middleware/rateLimit"); // Updated import
 const errorHandler = require("./middleware/errorHandler");
 const authRoutes = require("./routes/authRoutes");
 const chatRoutes = require("./routes/chatRoutes");
@@ -24,8 +24,6 @@ const io = new Server(server, {
  },
  transports: ["websocket", "polling"],
 });
-
-console.log("JWT_KEY loaded:", JWT_KEY ? "Yes" : "No");
 
 io.use((socket, next) => {
  const token = socket.handshake.auth.token;
@@ -55,7 +53,7 @@ app.use(
 );
 app.use(express.json());
 app.use(cookieParser());
-app.use(rateLimit);
+app.use(chatRateLimiter); // Apply rate limiting globally
 
 const uploadQueue = new Map();
 app.use((req, res, next) => {
